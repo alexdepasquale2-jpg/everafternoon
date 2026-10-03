@@ -1,0 +1,54 @@
+name: Build and deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Fetch Phaser 3.90.0 from npm
+        run: |
+          mkdir -p lib /tmp/phaser && cd /tmp/phaser
+          npm pack phaser@3.90.0
+          tar -xzf phaser-3.90.0.tgz
+          cp package/dist/phaser.min.js "$GITHUB_WORKSPACE/lib/phaser.min.js"
+          echo "e92ddef111ba42e92d316979c732311757093688ea1810591cb7aa2858eba7a7  $GITHUB_WORKSPACE/lib/phaser.min.js" | sha256sum -c -
+      - name: Build single self-contained file
+        run: |
+          python3 build_single.py
+          mkdir -p dist
+          cp everafternoon.html dist/index.html
+          touch dist/.nojekyll
+          ls -la dist
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
