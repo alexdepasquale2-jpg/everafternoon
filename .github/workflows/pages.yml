@@ -34,6 +34,7 @@ jobs:
           python3 build_single.py
           mkdir -p dist
           cp everafternoon.html dist/index.html
+          if [ -d loosen ]; then cp -r loosen dist/loosen; fi
           touch dist/.nojekyll
           ls -la dist
       - uses: actions/configure-pages@v5
