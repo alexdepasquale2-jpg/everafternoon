@@ -61,7 +61,13 @@ def build_keeper():
 
 def build_sky():
     from sky import native
-    save_native(native(), "bg_sky.png")
+
+    spr = native()
+    path = IMG / "bg_sky.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    im = spr.image(SCALE).convert("RGB")
+    im.save(path)
+    print(f"{'bg_sky.png':24} native {spr.w:4}x{spr.h:<4}  file {im.size[0]}x{im.size[1]}  {im.mode}")
 
 
 def build_logo():
