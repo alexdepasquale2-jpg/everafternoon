@@ -139,15 +139,21 @@
     tick: function (t) { noise(t, 0.02, 0.05, 3000, 1.2); }
   };
 
-  function play(name) {
+  function play(name, rate) {
     if (!soundOn || !unlocked) return;
+    rate = rate || 1;
     if (files[name]) {
       var a = new Audio(files[name]);
       a.volume = 0.55;
+      a.playbackRate = Math.max(0.5, Math.min(2, rate));
       a.play().catch(function () {});
       return;
     }
     if (!ctx || !SYNTH[name]) return;
+    if (name === "score_tick") {
+      osc("square", 520 * rate, ctx.currentTime, 0.05, 0.05, 360 * rate);
+      return;
+    }
     SYNTH[name](ctx.currentTime);
   }
 

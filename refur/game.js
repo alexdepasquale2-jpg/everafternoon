@@ -56,17 +56,49 @@
     mute: { name: "Mute Engine", text: "Wags are switched off this Day." }
   };
   var BOSSES = ["long", "wind", "rope", "mute"];
-  var PLOTS = [
-    { side: "L", outer: false, t: 0.66 },
-    { side: "L", outer: false, t: 0.80 },
-    { side: "L", outer: true, t: 0.60 },
-    { side: "L", outer: true, t: 0.86 },
-    { side: "R", outer: false, t: 0.20 },
-    { side: "R", outer: false, t: 0.34 },
-    { side: "R", outer: true, t: 0.14 },
-    { side: "R", outer: true, t: 0.40 }
+  /* Rim and beds in the spire's native pixels (the png is this times 3). */
+  /* A lane beside the painted beds. Tile centers sit under the brick, so the
+     walkable rim is traced on the visible fur instead. */
+  var RIM = [
+    [150, 102], [175, 108], [200, 118], [222, 132], [236, 150], [238, 168],
+    [232, 190], [226, 210], [214, 232], [200, 252], [186, 275], [168, 292],
+    [145, 300], [120, 298], [95, 288], [75, 270], [62, 245], [55, 220],
+    [62, 190], [72, 165], [80, 145], [95, 125], [112, 112], [130, 104]
   ];
-  var ADJ = [[0, 1], [2, 3], [0, 2], [1, 3], [4, 5], [6, 7], [4, 6], [5, 7]];
+  /* Centers of the painted soil, not the plate origin. */
+  var BEDS = [
+    { x: 50, y: 256, side: "L", outer: true },
+    { x: 38, y: 211, side: "L", outer: true },
+    { x: 64, y: 151, side: "L", outer: false },
+    { x: 85, y: 106, side: "L", outer: false },
+    { x: 190, y: 298, side: "R", outer: true },
+    { x: 218, y: 256, side: "R", outer: true },
+    { x: 246, y: 214, side: "R", outer: false },
+    { x: 260, y: 165, side: "R", outer: false }
+  ];
+  var PLOTS = BEDS;
+  var ADJ = [[0, 1], [1, 2], [2, 3], [4, 5], [5, 6], [6, 7]];
+  var RIM_LEN = [];
+  var RIM_TOTAL = 0;
+  (function () {
+    var i, a, b, dx, dy;
+    for (i = 0; i < RIM.length; i++) {
+      a = RIM[i]; b = RIM[(i + 1) % RIM.length];
+      dx = b[0] - a[0]; dy = b[1] - a[1];
+      RIM_LEN.push(Math.sqrt(dx * dx + dy * dy));
+      RIM_TOTAL += RIM_LEN[i];
+    }
+  })();
+  var GUIDE = [
+    { id: "select", title: "The coat is in your hands", body: "Click a card. The suit is the crop. The rank is how hard it stands." },
+    { id: "plant", title: "Set it in the fur", body: "Click an empty bed. A ghost of the crop shows you where it will sit." },
+    { id: "compost", title: "One card for the heap", body: "Click a card you will not plant, then Compost. That is +1 Mult today." },
+    { id: "dusk", title: "The rim wakes", body: "Begin Dusk when the beds are the hand you want to be paid for." },
+    { id: "shoo", title: "Shoo the Habit", body: "Walk up to the empty suit and press Shoo. It steps back up the rim." },
+    { id: "water", title: "Three splashes", body: "Water a bitten bed. The pail holds three, then it is dry." },
+    { id: "harvest", title: "One hand, one tithe", body: "What still stands is scored as a poker hand. The name comes up big. It has to clear the tithe." }
+  ];
+  var HOW = "Dawn deals seven cards. Plant up to five on the beds. Compost up to three: each one is +1 Mult.\nA card's suit is its crop. Sapgourd slows. Quillstalk shoots. Glintpod pays gold. Burrclutch roots a grazer. Face cards are Hands and also swat. Aces are Old Roots.\nBegin Dusk. Grazers walk the pale rim. Shoo them, water a bed, or fire the front Wag.\nHarvest scores the standing crops as one poker hand: chips times Mult. Meet the tithe or the Engine takes the husk. Extra score becomes gold at the Counter.\nEight Antes, then the coat is on. You can keep walking.";
   var BLADDER_COLORS = ["#e24b4b", "#3aa0d8", "#3cba78", "#e454a4", "#e0b15a"];
 
   var canvas, ctx, view = { w: 960, h: 540 }, frame = null, hits = [];
@@ -75,7 +107,8 @@
   var IMG = {};
   var rngState = 1;
   var opts, col, meta, G;
-  var finePointer = false;
+  var finePointer = false, mouseOnly = false;
+  var hover = { x: 0, y: 0, on: false, card: -1, plot: -1 };
   var booted = false;
   var tagModal = false;
 
@@ -216,14 +249,45 @@
   }
 
   function pathXY(t) {
-    var a = t * Math.PI * 2 - Math.PI / 2;
-    return { x: Math.cos(a) * 180, y: Math.sin(a) * 100 };
+    t = ((t % 1) + 1) % 1;
+    var dist = t * RIM_TOTAL, i, L, f, a, b;
+    for (i = 0; i < RIM.length; i++) {
+      L = RIM_LEN[i];
+      if (dist <= L || i === RIM.length - 1) {
+        f = L ? Math.max(0, Math.min(1, dist / L)) : 0;
+        a = RIM[i]; b = RIM[(i + 1) % RIM.length];
+        return { x: a[0] + (b[0] - a[0]) * f, y: a[1] + (b[1] - a[1]) * f };
+      }
+      dist -= L;
+    }
+    return { x: RIM[0][0], y: RIM[0][1] };
   }
+  function pathTAt(x, y) {
+    var best = 0, bd = 1e9, acc = 0, i, a, b, L, steps, s, f, px, py, dx, dy, d;
+    for (i = 0; i < RIM.length; i++) {
+      a = RIM[i]; b = RIM[(i + 1) % RIM.length];
+      L = RIM_LEN[i];
+      steps = Math.max(1, Math.round(L / 6));
+      for (s = 0; s <= steps; s++) {
+        f = s / steps;
+        px = a[0] + (b[0] - a[0]) * f;
+        py = a[1] + (b[1] - a[1]) * f;
+        dx = px - x; dy = py - y; d = dx * dx + dy * dy;
+        if (d < bd) { bd = d; best = (acc + L * f) / RIM_TOTAL; }
+      }
+      acc += L;
+    }
+    return best;
+  }
+  var BED_T = BEDS.map(function (d) { return pathTAt(d.x, d.y); });
+  var RIM_T = { right: pathTAt(220, 210), left: pathTAt(70, 200) };
   function plotDesign(i) {
-    var d = PLOTS[i];
-    var p = pathXY(d.t);
-    var f = d.outer ? 1.28 : 0.74;
-    return { x: p.x * f, y: p.y * f, t: d.t, side: d.side, outer: d.outer };
+    var d = BEDS[i];
+    return { x: d.x, y: d.y, t: BED_T[i], side: d.side, outer: d.outer };
+  }
+  function crossed(prev, now, mark) {
+    if (now < prev) return prev < mark || now >= mark;
+    return prev < mark && now >= mark;
   }
   function angDist(a, b) {
     var d = Math.abs(a - b);
@@ -277,7 +341,10 @@
     G.exiled = [];
     G.plots = [null, null, null, null, null, null, null, null];
     G.wags = [11];
-    G.keeper = { x: 0, y: 48, facing: "s", walk: 0 };
+    G.keeper = { x: 120, y: 270, facing: "s", walk: 0 };
+    G.keeperSpace = "rim";
+    G.guide = 0;
+    G.dawnT = 0;
     G.cardSeq = 1;
     G.shopVisits = 0;
     G.won = false;
@@ -397,6 +464,7 @@
       G.plots[i].swatCd = 0.3;
     }
     if (G.day === 3) G.moltSeen = false;
+    G.dawnT = 1.25;
     drawTo(7);
     if (G.mode === "story" && G.ante === 1 && G.day === 1) ensurePair();
     G.wave = waveList();
@@ -413,12 +481,44 @@
     RefurAudio.setMusic("day");
   }
 
-  function showTutorial() {
+  function showTutorial() { G.guide = 0; }
+  function guiding() {
+    return !!(G && G.mode === "story" && G.ante === 1 && G.day === 1 && meta && !meta.sawTutorial && (G.guide || 0) < GUIDE.length && (G.screen === "play" || G.screen === "harvest"));
+  }
+  function guideNow() { return guiding() ? GUIDE[G.guide || 0] : null; }
+  function duskLocked() { return guiding() && (G.guide || 0) < 3; }
+  function advanceGuide() {
+    if (!guiding()) return;
+    var id = GUIDE[G.guide].id, done = false;
+    if (id === "select") done = G.selected >= 0 || G.plantedCount > 0 || (G.drag && G.drag.i >= 0);
+    else if (id === "plant") done = (G.plantedCount || 0) >= 1;
+    else if (id === "compost") done = (G.compostsUsed || 0) >= 1 || (G.compostsLeft || 0) <= 0 || !(G.hand && G.hand.length);
+    else if (id === "dusk") done = G.phase !== "plant";
+    else if (id === "shoo") done = (G.habitsShooed || 0) > 0 || G.phase !== "dusk";
+    else if (id === "water") done = G.watersLeft < 3 || G.phase !== "dusk";
+    else if (id === "harvest") done = G.screen === "harvest" || G.screen === "shop" || G.screen === "end";
+    if (done) G.guide++;
+  }
+  function easeLifts(dt) {
+    if (!G.lifts) G.lifts = [];
+    var n = G.hand ? G.hand.length : 0, i, target, k = Math.min(1, dt / 0.11);
+    for (i = 0; i < n; i++) {
+      target = (G.selected === i || hover.card === i) ? 1 : 0;
+      G.lifts[i] = (G.lifts[i] || 0) + (target - (G.lifts[i] || 0)) * k;
+    }
+  }
+  function skipGuide() {
+    meta.sawTutorial = true;
+    saveMeta();
+    G.guide = 99;
+    sfx("ui_tap");
+  }
+  function showHow() {
     G.modal = {
-      kind: "tutorial",
-      title: "DAY 1",
-      body: TUTORIAL,
-      buttons: [{ label: "I have the ledger", fn: function () { dismissModal(); } }]
+      kind: "how",
+      title: "HOW TO PLAY",
+      body: HOW,
+      buttons: [{ label: "Back to the husk", fn: function () { G.modal = null; } }]
     };
   }
   function showMolt() {
@@ -482,14 +582,14 @@
     persist();
   }
   function plantNearest() {
-    var best = -1, bd = 78, i, p, d;
+    var best = -1, bd = 120, i, p, d;
     for (i = 0; i < 8; i++) {
       if (G.plots[i]) continue;
       p = plotDesign(i);
       d = Math.hypot(p.x - G.keeper.x, p.y - G.keeper.y);
       if (d < bd) { bd = d; best = i; }
     }
-    if (best < 0) { toast("Walk closer to an empty plot."); return; }
+    if (best < 0) { toast("Click an empty bed."); return; }
     plantAt(best);
   }
   function compostSelected() {
@@ -560,6 +660,7 @@
   }
   function startDusk() {
     if (G.phase !== "plant" || G.modal) return;
+    if (duskLocked()) { toast("Follow the note. Plant, then compost, then dusk."); return; }
     armDusk();
     G.screen = "play";
     sfx("ui_tap");
@@ -592,6 +693,9 @@
   function hurt(g, dmg, byShoo) {
     if (!g || !g.alive || dmg <= 0) return;
     g.hp -= dmg;
+    g.flash = 0.16;
+    var pos = pathXY(g.t);
+    floatText("-" + dmg, pos.x, pos.y - 18);
     if (g.hp <= 0) killGrazer(g, !!byShoo);
   }
   function killGrazer(g, byShoo) {
@@ -632,8 +736,10 @@
     }
     if (dmg <= 0) return;
     p.hp -= dmg;
+    p.flash = 0.16;
     var pd = plotDesign(i);
     floatText("-" + dmg, pd.x, pd.y - 16);
+    sfx("burr");
     if (p.hp <= 0) wilt(i);
   }
   function wilt(i) {
@@ -664,7 +770,7 @@
     burst(pd.x, pd.y, "#3aa0d8", 5);
   }
   function waterNearest() {
-    var best = -1, bd = 74, i, p, d;
+    var best = -1, bd = 96, i, p, d;
     for (i = 0; i < 8; i++) {
       if (!G.plots[i]) continue;
       p = plotDesign(i);
@@ -687,7 +793,7 @@
       p = pathXY(g.t);
       if (g.type === "rope") p.y -= 36;
       dx = p.x - G.keeper.x; dy = p.y - G.keeper.y;
-      if (dx * dx + dy * dy > 62 * 62) continue;
+      if (dx * dx + dy * dy > 78 * 78) continue;
       hit = true;
       g.t -= 0.055;
       hurt(g, 7, true);
@@ -837,8 +943,8 @@
       g.t += grazerSpeed(g) * dt;
       if (!g.alive) continue;
       if (g.type === "long") {
-        if (!g.didR && prev < 0.25 && g.t >= 0.25) { stomp("R"); g.didR = true; }
-        if (!g.didL && prev < 0.75 && g.t >= 0.75) { stomp("L"); g.didL = true; }
+        if (!g.didR && crossed(prev, g.t, RIM_T.right)) { stomp("R"); g.didR = true; }
+        if (!g.didL && crossed(prev, g.t, RIM_T.left)) { stomp("L"); g.didL = true; }
       }
       if (g.type === "rope" && !g.stealDone && prev < g.stealAt && g.t >= g.stealAt) stealFromHand(g);
       if (!g.alive) continue;
@@ -1194,17 +1300,15 @@
     var m = Math.sqrt(x * x + y * y);
     if (m > 1) { x /= m; y /= m; }
     if (m > 0.12) {
-      G.keeper.x += x * 96 * dt;
-      G.keeper.y += y * 78 * dt;
+      G.keeper.x += x * 120 * dt;
+      G.keeper.y += y * 120 * dt;
       G.keeper.facing = Math.abs(x) > Math.abs(y) ? (x > 0 ? "e" : "w") : (y > 0 ? "s" : "n");
       G.keeper.walk = (G.keeper.walk || 0) + dt;
+      G.stepCd = (G.stepCd || 0) - dt;
+      if (G.stepCd <= 0) { G.stepCd = 0.34; sfx("boots"); }
     }
-    var ex = G.keeper.x / 230, ey = G.keeper.y / 145;
-    var e = ex * ex + ey * ey;
-    if (e > 1) {
-      G.keeper.x = (ex / Math.sqrt(e)) * 230;
-      G.keeper.y = (ey / Math.sqrt(e)) * 145;
-    }
+    G.keeper.x = Math.max(28, Math.min(284, G.keeper.x));
+    G.keeper.y = Math.max(88, Math.min(336, G.keeper.y));
   }
 
   function update(dt) {
@@ -1214,6 +1318,15 @@
     if (G.screen === "opening" && G.openStep === 0 && !portrait) {
       G.openT = (G.openT || 0) + dt;
       if (G.openT > 3.3) G.openStep = 1;
+    }
+    if (G.dawnT > 0) G.dawnT -= dt;
+    advanceGuide();
+    easeLifts(dt);
+    if (G.grazers) {
+      for (var gi = 0; gi < G.grazers.length; gi++) if (G.grazers[gi].flash > 0) G.grazers[gi].flash -= dt;
+    }
+    if (G.plots) {
+      for (var pi = 0; pi < 8; pi++) if (G.plots[pi] && G.plots[pi].flash > 0) G.plots[pi].flash -= dt;
     }
     if (G.screen === "play" && !G.modal && !portrait) {
       if (G.phase === "plant" || G.phase === "dusk") moveKeeper(dt);
@@ -1230,9 +1343,13 @@
       var prev = G.harvestShown || 0;
       if (prev < target) {
         G.harvestShown = Math.min(target, prev + dt * Math.max(90, target * 0.85));
-        if (Math.floor(G.harvestShown / 24) !== Math.floor(prev / 24)) RefurAudio.blip(420 + (target ? (G.harvestShown / target) * 680 : 0));
+        var step = Math.max(8, target / 18);
+        if (Math.floor(G.harvestShown / step) !== Math.floor(prev / step)) {
+          RefurAudio.play("score_tick", 0.82 + (target ? (G.harvestShown / target) * 0.7 : 0));
+        }
         if (G.harvestShown >= target && !G.harvestSound) {
           G.harvestSound = true;
+          G.shake = 0.18;
           sfx(G.result.ok ? "engine_stamp" : "engine_groan");
         }
       }
@@ -1299,7 +1416,7 @@
       compostsMax: G.compostsMax, compostsUsed: G.compostsUsed, watersLeft: G.watersLeft,
       wagUsed: !!G.wagUsed, plantedCount: G.plantedCount, habitsShooed: G.habitsShooed || 0,
       glintGold: G.glintGold || 0, boss: G.boss, tithe: G.tithe, gnawToday: !!G.gnawToday, wave: G.wave,
-      keeper: G.keeper, shop: G.shop, shopVisits: G.shopVisits || 0, keepPlot: G.keepPlot,
+      keeper: G.keeper, keeperSpace: "rim", shop: G.shop, shopVisits: G.shopVisits || 0, keepPlot: G.keepPlot,
       won: !!G.won, credited: !!G.credited, victoryShown: !!G.victoryShown, bankedThisDay: !!G.bankedThisDay,
       result: G.result, harvestShown: G.harvestShown || 0, harvestSound: !!G.harvestSound,
       selected: G.selected == null ? -1 : G.selected, openStep: G.openStep || 0, openT: G.openT || 0,
@@ -1324,10 +1441,12 @@
     G.fxText = [];
     G.modal = null;
     G.toast = null;
-    if (!G.keeper) G.keeper = { x: 0, y: 48, facing: "s", walk: 0 };
+    if (!G.keeper || data.keeperSpace !== "rim") G.keeper = { x: 120, y: 270, facing: "s", walk: 0 };
+    G.keeperSpace = "rim";
+    if (G.guide == null) G.guide = 0;
     if (!G.exiled) G.exiled = [];
     if (G.screen === "play" && G.phase === "dusk") armDusk();
-    if (G.screen === "play" && G.phase === "plant" && G.ante === 1 && G.day === 1 && !meta.sawTutorial) showTutorial();
+    if (G.screen === "play" && G.phase === "plant" && G.ante === 1 && G.day === 1 && !meta.sawTutorial) G.guide = G.guide || 0;
     else if (G.screen === "play" && G.phase === "plant" && G.day === 3 && !G.moltSeen) showMolt();
     RefurAudio.setMusic(G.phase === "dusk" ? "dusk" : "day");
     return true;
@@ -1473,13 +1592,13 @@
       C: { x: cx, y: cy + gap, r: btnR, id: "C" },
       D: { x: cx + gap, y: cy, r: btnR, id: "D" }
     };
-    var topH = Math.max(28, Math.round(32 * u));
-    var wagW = Math.max(68, Math.min(104, W * 0.12));
-    var handH = Math.max(74, Math.round(100 * u));
+    var topH = Math.max(118, Math.min(128, Math.round(126 * u)));
+    var wagW = Math.max(86, Math.min(120, W * 0.13));
+    var handH = mouseOnly ? Math.max(148, Math.min(176, Math.round(160 * u))) : Math.max(112, Math.round(136 * u));
     var joyClear = joyR * 2 + m;
     var btnClear = btnR * 4.4 + m;
-    var sideL = left ? btnClear : joyClear;
-    var sideR = Math.max(wagW, left ? joyClear : btnClear);
+    var sideL = mouseOnly ? 16 : (left ? btnClear : joyClear);
+    var sideR = mouseOnly ? wagW + 8 : Math.max(wagW, left ? joyClear : btnClear);
     var play = { x: L + sideL, y: T + topH, w: Math.max(150, W - sideL - sideR), h: Math.max(110, H - topH - handH) };
     var wag = { x: R - wagW, y: T + topH, w: wagW - 8, h: Math.max(48, Math.min(play.h, H - topH - joyR * 2 - 16)) };
     return { L: L, T: T, R: R, B: B, W: W, H: H, u: u, joy: joy, buttons: buttons, topH: topH, wagW: wagW, handH: handH, play: play, wag: wag, left: left };
@@ -1493,7 +1612,11 @@
     rx = ry / 0.56;
     return { cx: rect.x + rect.w * 0.5, cy: rect.y + rect.h * 0.46, rx: rx, ry: ry, sx: rx / 180, sy: ry / 100 };
   }
-  function W2S(cam, x, y) { return { x: cam.cx + x * cam.sx, y: cam.cy + y * cam.sy }; }
+  function W2S(cam, x, y) {
+    var w = frame && frame.world;
+    if (!w) return { x: x, y: y };
+    return { x: w.x + x * w.scale, y: w.y + y * w.scale };
+  }
 
   /* ---------- drawing ---------- */
   function font(px, bold) { ctx.font = (bold ? "700 " : "") + px + "px Courier New, ui-monospace, monospace"; }
@@ -1507,11 +1630,32 @@
     ctx.arcTo(x, y, x + w, y, r);
     ctx.closePath();
   }
-  function paint(name, x, y, w, h) {
+  function blit(name, dx, dy, dw, dh, sx, sy, sw, sh) {
     var img = IMG[name];
     if (!img || !img.complete || !img.naturalWidth) return false;
-    ctx.drawImage(img, Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+    ctx.imageSmoothingEnabled = false;
+    if (sw) ctx.drawImage(img, sx, sy, sw, sh, Math.round(dx), Math.round(dy), Math.round(dw), Math.round(dh));
+    else ctx.drawImage(img, Math.round(dx), Math.round(dy), Math.round(dw), Math.round(dh));
     return true;
+  }
+  function paint(name, x, y, w, h) { return blit(name, x, y, w, h); }
+  function drawFoot(name, footX, footY, scale) {
+    var img = IMG[name];
+    if (!img || !img.complete || !img.naturalWidth) return false;
+    var w = Math.max(1, Math.round((img.naturalWidth / 3) * scale));
+    var h = Math.max(1, Math.round((img.naturalHeight / 3) * scale));
+    return blit(name, footX - w / 2, footY - h, w, h);
+  }
+  function placeWorld(rect) {
+    var natW = 311, natH = 381;
+    var fit = Math.min(Math.max(48, rect.w - 6) / natW, Math.max(48, rect.h - 6) / natH);
+    var scale = fit >= 2 ? Math.floor(fit) : (fit >= 1 ? 1 : Math.max(0.45, fit));
+    var w = natW * scale, h = natH * scale;
+    return {
+      x: Math.round(rect.x + (rect.w - w) / 2),
+      y: Math.round(rect.y + Math.max(0, (rect.h - h) / 2)),
+      w: w, h: h, scale: scale
+    };
   }
   function wrap(text, maxW) {
     var paras = String(text).split("\n");
@@ -1601,7 +1745,12 @@
     ctx.moveTo(x, y + hh); ctx.lineTo(x, y + hh + dep); ctx.stroke();
   }
   function drawSpire(cam) {
-    if (paint("spire", cam.cx - cam.rx * 1.35, cam.cy - cam.ry * 2.1, cam.rx * 2.7, cam.ry * 3.3)) return;
+    var world = frame.world;
+    if (world && blit("spire", world.x, world.y, world.w, world.h)) {
+      var board = W2S(null, 190, 62);
+      return board;
+    }
+    if (!world) return null;
     var layers = [
       { w: 1.15, h: 0.42, d: 0.22, y: 28, top: "#7f9a52", left: "#8d4030", right: "#c4623e" },
       { w: 0.92, h: 0.34, d: 0.18, y: 2, top: "#d7b85a", left: "#6d3348", right: "#a85a48" },
@@ -1655,21 +1804,17 @@
     }
   }
   function drawPath(cam) {
-    var i, p, s, n = 28;
-    for (i = 0; i < n; i++) {
-      p = W2S(cam, pathXY(i / n).x, pathXY(i / n).y);
-      s = Math.max(7, cam.rx * 0.055);
-      ctx.fillStyle = i % 2 ? "#6a5348" : "#7d6558";
-      ctx.beginPath();
-      ctx.ellipse(p.x, p.y, s, s * 0.62, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = COL.ink; ctx.lineWidth = 1.5; ctx.stroke();
-    }
-    var gap = W2S(cam, pathXY(0).x, pathXY(0).y - 18);
-    ctx.fillStyle = "rgba(244,230,200,0.85)";
-    ctx.beginPath();
-    ctx.ellipse(gap.x, gap.y, 16, 8, 0, 0, Math.PI * 2);
-    ctx.fill();
+    var world = frame.world;
+    if (!world) return;
+    var spawn = W2S(null, RIM[0][0], RIM[0][1]);
+    font(Math.max(11, Math.round(12 * world.scale)), true);
+    ctx.textAlign = "center";
+    inkText("rim", spawn.x, spawn.y - 14, COL.cream);
+    hits.push({
+      x: spawn.x, y: spawn.y - 14, r: 22,
+      tipTitle: "The rim",
+      tip: "Grazers come out here and walk the pale path around the husk. Shoo sends them back up it."
+    });
   }
   function drawSuit(suit, x, y, r) {
     if (paint("suit_" + suit, x - r, y - r, r * 2, r * 2)) return;
@@ -1729,50 +1874,87 @@
     ctx.restore();
     ctx.strokeStyle = COL.ink; ctx.lineWidth = 2;
   }
-  function drawCrop(card, x, y, pix) {
-    var name = cropImage(card);
-    var w = 16 * pix, h = 20 * pix;
-    if (paint(name, x - w / 2, y - h + 4, w, h)) return;
-    drawCropIcon(card, x, y - 6 * (pix / 2), 10 + pix * 2);
+  function bedDiamond(x, y, hw, hh) {
+    ctx.beginPath();
+    ctx.moveTo(x, y - hh); ctx.lineTo(x + hw, y); ctx.lineTo(x, y + hh); ctx.lineTo(x - hw, y); ctx.closePath();
   }
-  function drawPlot(i, cam, pix) {
+  function cropTip(card) {
+    var job = {
+      sap: "Sapgourd. Splashes sap and slows grazers on the rim.",
+      quill: "Quillstalk. Fires quills along the rim.",
+      glint: "Glintpod. Pings grazers, and pays 1 gold the first time each one comes close.",
+      burr: "Burrclutch. Roots a grazer so it cannot bite.",
+      root: "Old Root. A long line of damage along the rim. It replaces the suit."
+    }[mainKind(card)];
+    if (isHand(card)) job += " This Hand also swats anything that steps on the bed.";
+    return {
+      title: rankStr(card.rank) + suitGlyph(card.suit) + "  " + cropName(card),
+      body: job + " Rank " + card.rank + " is added to the chips. Click the card, then click an empty bed. Or drop it on Compost for +1 Mult."
+    };
+  }
+  function drawPlot(i, scale) {
     var d = plotDesign(i);
-    var s = W2S(cam, d.x, d.y);
-    var rw = Math.max(16, 14 * pix), rh = rw * 0.55;
-    ctx.fillStyle = "#4e3424";
-    ctx.beginPath();
-    ctx.moveTo(s.x, s.y - rh); ctx.lineTo(s.x + rw, s.y); ctx.lineTo(s.x, s.y + rh); ctx.lineTo(s.x - rw, s.y); ctx.closePath();
+    var s = W2S(null, d.x, d.y);
+    var hw = Math.max(16, 20 * scale), hh = hw * 0.5;
+    var planted = G.plots && G.plots[i];
+    var canPlant = G.screen === "play" && G.phase === "plant" && !planted && (G.plantsLeft || 0) > 0 && ((G.selected >= 0 && G.hand && G.hand[G.selected]) || (G.drag && G.hand && G.hand[G.drag.i]));
+    var hot = hover.plot === i;
+    bedDiamond(s.x, s.y, hw + (hot ? 3 : 0), hh + (hot ? 1 : 0));
+    ctx.fillStyle = canPlant ? "rgba(228,197,110,0.38)" : (hot ? "rgba(244,230,200,0.28)" : "rgba(90,58,40,0.22)");
     ctx.fill();
-    ctx.fillStyle = "#6e8f46";
-    ctx.beginPath();
-    ctx.moveTo(s.x, s.y - rh + 4); ctx.lineTo(s.x + rw - 5, s.y); ctx.lineTo(s.x, s.y + rh - 4); ctx.lineTo(s.x - rw + 5, s.y); ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = COL.ink; ctx.lineWidth = 2; ctx.stroke();
-    if (G.plots && G.plots[i]) {
-      drawCrop(G.plots[i].card, s.x, s.y, pix);
-      var hp = G.plots[i].hp / G.plots[i].maxHp;
-      ctx.fillStyle = "#24161c"; ctx.fillRect(s.x - 12, s.y - rh - 8, 24, 4);
-      ctx.fillStyle = hp > 0.35 ? "#6e8f46" : "#e24b4b"; ctx.fillRect(s.x - 11, s.y - rh - 7, 22 * Math.max(0, hp), 2);
+    ctx.lineWidth = hot || canPlant ? 3 : 2;
+    ctx.strokeStyle = hot ? "#f4e6c8" : (canPlant ? "#e4c56e" : "#24161c");
+    ctx.stroke();
+    if (planted) {
+      var card = planted.card;
+      if (!drawFoot(cropImage(card), s.x, s.y - hh * 0.15, scale)) drawCropIcon(card, s.x, s.y - 16, 14);
+      if (planted.flash > 0) {
+        ctx.globalAlpha = planted.flash * 4;
+        ctx.fillStyle = "#f4e6c8";
+        bedDiamond(s.x, s.y, hw, hh);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      var hp = planted.hp / planted.maxHp;
+      var by = s.y - hh - 16 * scale;
+      ctx.fillStyle = "#24161c"; ctx.fillRect(s.x - 14, by, 28, 5);
+      ctx.fillStyle = hp > 0.35 ? "#6e8f46" : "#e24b4b"; ctx.fillRect(s.x - 13, by + 1, 26 * Math.max(0, hp), 3);
+      var inHand = false;
+      if (G.screen === "harvest" && G.result) {
+        var played = G.result.cards || G.result.scoring || [];
+        var si;
+        for (si = 0; si < played.length; si++) if (played[si].id === card.id) inHand = true;
+      }
+      if (inHand) {
+        ctx.strokeStyle = "#e4c56e"; ctx.lineWidth = 3;
+        ctx.strokeRect(s.x - hw - 2, s.y - hh - 22 * scale, hw * 2 + 4, hh * 2 + 26 * scale);
+      }
       if (G.keepPlot === i) {
-        ctx.strokeStyle = "#2fbfb4"; ctx.strokeRect(s.x - 14, s.y - rh - 12, 28, 8);
+        ctx.strokeStyle = "#2fbfb4"; ctx.lineWidth = 2;
+        ctx.strokeRect(s.x - 16, by - 4, 32, 8);
+      }
+    } else if (canPlant) {
+      var ghost = (G.drag && G.hand[G.drag.i]) || G.hand[G.selected];
+      if (ghost) {
+        ctx.globalAlpha = 0.45;
+        if (!drawFoot(cropImage(ghost), s.x, s.y - hh * 0.15, scale)) drawCropIcon(ghost, s.x, s.y - 16, 14);
+        ctx.globalAlpha = 1;
       }
     }
-    var glow = G.screen === "play" && G.phase === "plant" && G.ante === 1 && G.day === 1 && (G.plantedCount || 0) < 3 && !G.plots[i];
-    if (glow) {
-      var bob = Math.sin(G.time * 5 + i) * 3;
-      ctx.fillStyle = "#f4e6c8";
-      ctx.beginPath();
-      ctx.moveTo(s.x, s.y - rh - 16 + bob); ctx.lineTo(s.x + 6, s.y - rh - 6 + bob); ctx.lineTo(s.x - 6, s.y - rh - 6 + bob);
-      ctx.fill();
-    }
     if (G.screen === "play" || G.screen === "harvest") {
-      hits.push({ x: s.x, y: s.y, r: Math.max(22, rw), kind: "plot", plot: i, label: "plot" + i, fn: (function (idx) { return function () { onPlot(idx); }; })(i) });
+      var tip = planted ? cropTip(planted.card) : { title: (d.outer ? "Outer bed" : "Inner bed"), body: canPlant ? "Empty fur. Click to plant the selected card here." : "An empty bed of fur on the husk. Select a card first." };
+      if (planted) tip = cropTip(planted.card);
+      hits.push({
+        x: s.x, y: s.y, r: Math.max(22, hw + 8), kind: "plot", plot: i, label: "plot" + i,
+        tipTitle: tip.title, tip: tip.body + (planted ? "  Bed " + (i + 1) + " · " + Math.ceil(planted.hp) + "/" + planted.maxHp + " hair." : ""),
+        fn: (function (idx) { return function () { onPlot(idx); }; })(i)
+      });
     }
     return s.y;
   }
   function drawBladder(x, y, color, frameN, scale) {
+    if (drawFoot("grazer_bladderkin_" + (frameN % 2), x, y, scale)) return;
     var w = 22 * scale, h = 18 * scale;
-    if (paint("grazer_bladderkin_" + (frameN % 2), x - w / 2, y - h / 2, w, h)) return;
     ctx.fillStyle = color;
     ctx.beginPath(); ctx.ellipse(x, y, 11 * scale, 9 * scale, 0, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "rgba(255,255,255,0.45)";
@@ -1782,9 +1964,8 @@
   }
   function drawHabitSprite(x, y, fr, scale, long) {
     var key = long ? "grazer_longhabit" : ("grazer_habit_" + (fr % 2));
+    if (drawFoot(key, x, y, scale)) return;
     var w = (long ? 36 : 22) * scale, h = (long ? 40 : 28) * scale;
-    if (!long && paint(key, x - w / 2, y - h + 4, w, h)) return;
-    if (long && paint("grazer_longhabit", x - w / 2, y - h + 4, w, h)) return;
     var leg = fr % 2 ? 4 : -4;
     ctx.fillStyle = long ? "#d9c7a2" : "#c4b48a";
     ctx.fillRect(x - 8 * scale, y - 20 * scale, 16 * scale, 16 * scale);
@@ -1804,8 +1985,8 @@
     }
   }
   function drawRope(x, y, fr, scale) {
+    if (drawFoot("grazer_ropejack_" + (fr % 2), x, y, scale)) return;
     var w = 26 * scale, h = 30 * scale;
-    if (paint("grazer_ropejack_" + (fr % 2), x - w / 2, y - h / 2, w, h)) return;
     drawBladder(x, y - 16 * scale, "#e454a4", fr, scale * 0.55);
     ctx.strokeStyle = "#e0b15a"; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(x, y - 10 * scale); ctx.lineTo(x, y); ctx.stroke();
@@ -1820,8 +2001,8 @@
   }
   function drawKeeper(x, y, facing, fr, pix) {
     var key = "keeper_" + facing + "_" + (fr % 2);
+    if (drawFoot(key, x, y, pix)) return;
     var w = 18 * pix, h = 26 * pix;
-    if (paint(key, x - w / 2, y - h + 2, w, h)) return;
     var leg = fr % 2 ? 3 : -3;
     ctx.fillStyle = "#2fbfb4";
     ctx.fillRect(x - 7, y - 22, 14, 14);
@@ -1838,8 +2019,8 @@
     ctx.strokeRect(x - 7, y - 22, 14, 14);
   }
   function drawEngine(x, y, s, talk) {
+    if (drawFoot(talk ? "engine_1" : "engine_0", x, y, s)) return;
     var w = 54 * s, h = 48 * s;
-    if (paint(talk ? "engine_1" : "engine_0", x, y, w, h)) return;
     ctx.fillStyle = COL.brass;
     ctx.fillRect(x + 8, y + 16, 36 * s, 26 * s);
     ctx.fillStyle = COL.brassD;
@@ -1855,19 +2036,22 @@
   }
 
   function drawWorld(cam, decor) {
+    var rect = decor
+      ? { x: frame.L + frame.W * 0.34, y: frame.T + 8, w: frame.W * 0.64, h: frame.H - 16 }
+      : frame.play;
+    frame.world = placeWorld(rect);
     ctx.save();
-    if (G.shake > 0 && !decor) ctx.translate(Math.sin(G.time * 70) * G.shake * 8, Math.cos(G.time * 60) * G.shake * 6);
-    drawMolts(cam);
+    if (G.shake > 0 && !decor) ctx.translate(Math.sin(G.time * 70) * G.shake * 8, Math.cos(G.time * 55) * G.shake * 6);
     var board = drawSpire(cam);
     drawPath(cam);
-    var pix = Math.max(2, Math.round(cam.sx * 3.2));
+    var pix = frame.world.scale;
     var stuff = [], i, s, g, p, fr;
     if (G.plots) {
       for (i = 0; i < 8; i++) {
         (function (idx) {
           var pd = plotDesign(idx);
           var sp = W2S(cam, pd.x, pd.y);
-          stuff.push({ y: sp.y, draw: function () { drawPlot(idx, cam, pix); } });
+          stuff.push({ y: sp.y, draw: function () { drawPlot(idx, pix); } });
         })(i);
       }
     }
@@ -1882,14 +2066,27 @@
         (function (gg, ss) {
           stuff.push({ y: ss.y, draw: function () {
             var frn = Math.floor(G.time * 6) % 2;
-            var sc = Math.max(0.85, cam.sx * 1.15);
+            var sc = pix * (gg.type === "long" ? 1.15 : 1);
+            if (gg.flash > 0) ctx.globalAlpha = 0.55 + gg.flash;
             if (gg.type === "bladder") drawBladder(ss.x, ss.y, gg.color, frn, sc);
             else if (gg.type === "rope") drawRope(ss.x, ss.y, frn, sc);
-            else drawHabitSprite(ss.x, ss.y, frn, sc * (gg.type === "long" ? 1.7 : 1), gg.type === "long");
-            if (gg.hp < gg.maxHp) {
-              ctx.fillStyle = "#24161c"; ctx.fillRect(ss.x - 10, ss.y - 28, 20, 3);
-              ctx.fillStyle = "#e24b4b"; ctx.fillRect(ss.x - 9, ss.y - 27, 18 * Math.max(0, gg.hp / gg.maxHp), 1);
-            }
+            else drawHabitSprite(ss.x, ss.y, frn, sc, gg.type === "long");
+            ctx.globalAlpha = 1;
+            var bw = 28 * pix, bh = ss.y - 36 * pix;
+            ctx.fillStyle = "#24161c"; ctx.fillRect(ss.x - bw / 2, bh, bw, 4);
+            ctx.fillStyle = gg.hp > gg.maxHp * 0.35 ? "#6e8f46" : "#e24b4b";
+            ctx.fillRect(ss.x - bw / 2 + 1, bh + 1, (bw - 2) * Math.max(0, gg.hp / gg.maxHp), 2);
+            var gtip = {
+              bladder: "Bladderkin. Fast and soft. It pops. A free 2 sometimes falls out.",
+              habit: "Habit. Slow. It bites the nearest bed.",
+              rope: "Ropejack. Fast. It steals the highest card still in your hand.",
+              long: "The Long Habit. It tramples a whole side of beds as it passes."
+            }[gg.type];
+            hits.push({
+              x: ss.x, y: ss.y - 16 * pix, r: 22 * pix, kind: "grazer",
+              tipTitle: gg.type === "long" ? "Long Habit" : (gg.type === "rope" ? "Ropejack" : (gg.type === "habit" ? "Habit" : "Bladderkin")),
+              tip: gtip + "  " + Math.ceil(gg.hp) + "/" + gg.maxHp + "."
+            });
           } });
         })(g, s);
       }
@@ -1901,13 +2098,13 @@
         pp.y -= 36;
         var ss = W2S(cam, pp.x, pp.y);
         (function (x, y, colr, ii) {
-          stuff.push({ y: y, draw: function () { drawBladder(x, y, colr, Math.floor(G.time * 4 + ii) % 2, 1); } });
+          stuff.push({ y: y, draw: function () { drawBladder(x, y, colr, Math.floor(G.time * 4 + ii) % 2, pix); } });
         })(ss.x, ss.y, BLADDER_COLORS[i], i);
       }
       var ht = (G.time * 0.02) % 1;
       var hp = pathXY(ht);
       var hs = W2S(cam, hp.x, hp.y);
-      stuff.push({ y: hs.y, draw: function () { drawHabitSprite(hs.x, hs.y, Math.floor(G.time * 4) % 2, 1, false); } });
+      stuff.push({ y: hs.y, draw: function () { drawHabitSprite(hs.x, hs.y, Math.floor(G.time * 4) % 2, pix, false); } });
     }
     if (!decor && G.keeper) {
       var ks = W2S(cam, G.keeper.x, G.keeper.y);
@@ -1945,8 +2142,8 @@
         ctx.globalAlpha = 1;
       }
     }
-    var eng = W2S(cam, -36, 78);
-    drawEngine(eng.x, eng.y, Math.max(0.7, cam.sx), G.clack > 0);
+    var eng = W2S(null, 168, 128);
+    drawEngine(eng.x, eng.y, pix, G.clack > 0);
     ctx.restore();
     return board;
   }
@@ -1961,59 +2158,93 @@
     if ((G.screen === "harvest" || G.screen === "victory") && G.result && !G.bankedThisDay) return (G.gold || 0) + (G.result.goldTotal || 0);
     return G.gold || 0;
   }
-  function drawHUD() {
-    if (!G.tithe && G.tithe !== 0) return;
-    var u = frame.u;
-    var y = frame.T + 6;
-    var x = frame.L + 8;
-    var h = frame.topH - 8;
-    function pill(px, icon, text, img) {
-      font(Math.round(13 * u), true);
-      var tw = ctx.measureText(text).width;
-      var w = tw + 36;
-      roundRect(px, y, w, h, 8);
-      ctx.fillStyle = "rgba(36,22,28,0.78)";
-      ctx.fill();
-      if (!paint(img, px + 6, y + (h - 16) / 2, 16, 16)) {
-        ctx.fillStyle = icon;
-        ctx.beginPath(); ctx.arc(px + 14, y + h / 2, 6, 0, Math.PI * 2); ctx.fill();
-      }
-      ctx.fillStyle = COL.cream;
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      ctx.fillText(text, px + 28, y + h / 2 + 1);
-      ctx.textBaseline = "alphabetic";
-      return px + w + 6;
-    }
-    x = pill(x, COL.wheat, String(Math.floor(chipShown())), "ui_chip");
-    x = pill(x, COL.brass, String(goldShown()), "ui_gold");
-    var leafN = G.screen === "play" && G.phase === "plant" ? (G.compostsLeft || 0) : (G.compostsUsed || 0);
-    x = pill(x, COL.moss, String(leafN), "ui_leaf");
-    var waveT = (G.wave && G.wave.length) || 0;
-    var waveTxt = G.phase === "dusk" ? ((G.cleared || 0) + "/" + (G.waveTotal || waveT)) : ("0/" + waveT);
-    x = pill(x, COL.teal, waveTxt, null);
-    var ante = "A" + G.ante + "·D" + G.day + (G.ante > 8 ? " ENDLESS" : "") + "  Tithe " + G.tithe + (G.gnawToday ? " −20%" : "");
-    font(Math.round(13 * u), true);
-    var aw = ctx.measureText(ante).width + 16;
-    roundRect(x, y, aw, h, 8);
-    ctx.fillStyle = "rgba(36,22,28,0.78)";
+  function hudPill(x, y, h, img, fallback, label, value, tipTitle, tip) {
+    font(12, true);
+    var text = label + "  " + value;
+    var tw = ctx.measureText(text).width;
+    var w = tw + 34;
+    roundRect(x, y, w, h, 8);
+    ctx.fillStyle = "rgba(36,22,28,0.82)";
     ctx.fill();
+    ctx.strokeStyle = COL.ink; ctx.lineWidth = 2; ctx.stroke();
+    if (!paint(img, x + 6, y + (h - 16) / 2, 16, 16)) {
+      ctx.fillStyle = fallback;
+      ctx.beginPath(); ctx.arc(x + 14, y + h / 2, 6, 0, Math.PI * 2); ctx.fill();
+    }
     ctx.fillStyle = COL.cream;
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
-    ctx.fillText(ante, x + 8, y + h / 2 + 1);
+    ctx.fillText(text, x + 26, y + h / 2 + 1);
     ctx.textBaseline = "alphabetic";
-    if (G.screen === "play" && G.preview) {
-      var name = G.preview.name;
-      var ok = G.preview.score >= G.tithe;
-      font(Math.round(13 * u), true);
-      ctx.textAlign = "left";
-      ctx.fillStyle = ok ? COL.moss : COL.terra;
-      ctx.fillText(name, frame.play.x + 8, frame.play.y + 16);
-      font(Math.round(11 * u));
+    hits.push({ x: x, y: y, w: w, h: h, tipTitle: tipTitle, tip: tip });
+    return x + w + 6;
+  }
+  function phaseInfo() {
+    if (G.screen === "shop") return { name: "COUNTER", line: "Two Wags are on offer. Buy with gold if you want one. Take one seed, then the next dawn." };
+    if (G.screen === "harvest") return { name: "HARVEST", line: "The standing crops are one poker hand. Chips times Mult has to meet the tithe." };
+    if (G.screen === "victory") return { name: "THE COAT", line: "The husk is refurred. Keep walking, or step down." };
+    if (G.screen === "play" && G.phase === "dusk") {
+      var sum = G.wave ? waveSummary(G.wave) : "the rim";
+      return { name: "DUSK", line: "On the rim: " + sum + ". Shoo them, water a bitten bed, or fire the front Wag." };
+    }
+    if (G.screen === "play" && G.phase === "plant") {
+      if ((G.dawnT || 0) > 0) return { name: "DAWN", line: "Seven cards. Plant up to " + (G.plantsMax || 5) + ". Compost up to " + (G.compostsMax || 3) + ", each one +1 Mult." };
+      return { name: "PLANT", line: "Click a card, then click an empty bed to plant it. Drop a card on the compost heap for +1 Mult." };
+    }
+    return null;
+  }
+  function scoreLine() {
+    var s = (G.screen === "harvest" && G.result) ? G.result : G.preview;
+    if (!s) return "";
+    var rel = s.score >= G.tithe ? "clears the tithe" : ("short by " + Math.max(0, G.tithe - s.score));
+    return s.name + "    " + s.chips + " × " + s.mult + " = " + s.score + "    " + rel;
+  }
+  function drawHUD() {
+    if (!G.tithe && G.tithe !== 0) return;
+    var y = frame.T + 4;
+    var x = frame.L + 8;
+    var h = 26;
+    var planted = 0, i;
+    if (G.plots) for (i = 0; i < 8; i++) if (G.plots[i]) planted++;
+    x = hudPill(x, y, h, "ui_chip", COL.wheat, "Chips", String(Math.floor(chipShown())), "Chips", "What this day is worth so far. Harvest banks it.");
+    x = hudPill(x, y, h, "ui_gold", COL.brass, "Gold", String(goldShown()), "Gold", "Spent at the Counter on Wags. The seed pack is free.");
+    if (G.phase === "dusk") x = hudPill(x, y, h, "ui_leaf", COL.blue, "Waters", String(G.watersLeft || 0), "Waters left", "Splashes left today. Each one heals a bed by 14.");
+    else x = hudPill(x, y, h, "ui_leaf", COL.moss, "Planted", planted + "/" + (G.plantsMax || 5), "Planted", "Beds with a living crop. You may plant " + (G.plantsLeft || 0) + " more.");
+    var ante = "Ante " + G.ante + "  Day " + G.day + (G.ante > 8 ? "  endless" : "");
+    x = hudPill(x, y, h, null, COL.teal, ante, "", "Ante and day", "Three days to an Ante. Day 3 is a Molt, with a boss on the rim. Eight Antes win the coat.");
+    uiButton(frame.R - 36, y, 28, h, "?", showHow);
+    var info = phaseInfo();
+    if (info) {
+      var bw = Math.min(640, frame.W * 0.62);
+      var bx = frame.L + (frame.W - bw) / 2;
+      var by = y + h + 4;
+      font(18, true);
+      ctx.textAlign = "center";
+      inkText(info.name, bx + bw / 2, by + 16, COL.wheat);
+      font(12);
       ctx.fillStyle = COL.ink;
-      var sum = G.wave ? waveSummary(G.wave) : "";
-      ctx.fillText(sum, frame.play.x + 8, frame.play.y + 30);
+      var lines = wrap(info.line, bw - 16);
+      ctx.fillText(lines[0] || "", bx + bw / 2, by + 34);
+      if ((G.screen === "play" || G.screen === "harvest") && G.preview) {
+        var ok = G.preview.score >= G.tithe;
+        font(13, true);
+        ctx.fillStyle = ok ? "#2d4a22" : "#6a2c22";
+        ctx.fillText(scoreLine(), bx + bw / 2, by + 52);
+        var barW = Math.min(280, bw - 40);
+        var barX = bx + (bw - barW) / 2;
+        var barY = by + 58;
+        var frac = G.tithe ? Math.max(0, Math.min(1, G.preview.score / G.tithe)) : 0;
+        if (G.screen === "harvest" && G.result) frac = G.tithe ? Math.max(0, Math.min(1, (G.harvestShown || 0) / G.tithe)) : 0;
+        roundRect(barX, barY, barW, 10, 4);
+        ctx.fillStyle = "rgba(36,22,28,0.55)"; ctx.fill();
+        roundRect(barX, barY, Math.max(4, barW * frac), 10, 4);
+        ctx.fillStyle = frac >= 1 ? COL.moss : COL.terra; ctx.fill();
+        font(11, true);
+        ctx.fillStyle = COL.cream;
+        var tlabel = "Tithe " + G.tithe + (G.gnawToday ? "  (−20%)" : "");
+        inkText(tlabel, bx + bw / 2, barY + 24, COL.cream);
+        hits.push({ x: barX, y: barY - 4, w: barW, h: 28, tipTitle: "Tithe due", tip: "The Engine is owed " + G.tithe + " chips today" + (G.gnawToday ? " (Tithe-Gnaw cut it by 20%)." : ".") + " The bar fills as the standing hand grows." });
+      }
     }
   }
   function drawWagColumn() {
@@ -2054,7 +2285,11 @@
         ctx.fillStyle = COL.teal;
         ctx.fillText("ACTIVE", box.x + 4, y + 12);
       }
-      if (G.screen === "play") hits.push({ x: box.x, y: y, w: box.w, h: bh, fn: (function (idx) { return function () { onWag(idx); }; })(i) });
+      if (G.screen === "play") hits.push({
+        x: box.x, y: y, w: box.w, h: bh,
+        tipTitle: WAGS[id].name, tip: WAGS[id].blurb + (i === 0 ? " This one is in front. D or Fire Wag uses it at dusk." : " Click to move it to the front."),
+        fn: (function (idx) { return function () { onWag(idx); }; })(i)
+      });
     }
     if (G.boss === "mute") {
       font(11, true);
@@ -2067,106 +2302,144 @@
     if (!G.hand) return;
     var n = G.hand.length;
     if (!n) return;
-    var u = frame.u;
-    var avail = frame.play.w;
-    var overlap = 0.56;
-    var cardW = Math.min(62 * u, avail / (1 + (n - 1) * overlap));
-    cardW = Math.max(34, cardW);
-    var cardH = cardW * 1.38;
+    var avail = Math.max(160, frame.play.w - (mouseOnly ? 210 : 20));
+    var overlap = 0.62;
+    var cardW = Math.min(118, avail / (1 + (n - 1) * overlap));
+    cardW = Math.max(72, Math.round(cardW));
+    var cardH = Math.round(cardW * (168 / 120));
     var step = cardW * overlap;
     var total = cardW + (n - 1) * step;
-    var start = frame.play.x + frame.play.w / 2 - total / 2 + cardW / 2;
-    var y = frame.B - cardH / 2 - 8;
+    var start = frame.play.x + (frame.play.w - (mouseOnly ? 200 : 0)) / 2 - total / 2 + cardW / 2;
+    var y = frame.B - cardH / 2 - 6;
     var i;
     for (i = 0; i < n; i++) {
-      var rot = (i - (n - 1) / 2) * 0.07;
-      var sel = G.selected === i;
-      drawCard(G.hand[i], start + i * step, y - (sel ? 16 : 0), cardW, cardH, rot, true);
+      if (G.drag && G.drag.i === i) continue;
+      var rot = (i - (n - 1) / 2) * 0.055;
+      var lift = ((G.lifts && G.lifts[i]) || 0) * 18;
+      var grow = 1 + ((G.lifts && G.lifts[i]) || 0) * 0.08;
+      drawCard(G.hand[i], start + i * step, y - lift, cardW * grow, cardH * grow, rot);
+      var tip = cropTip(G.hand[i]);
       hits.push({
-        x: start + i * step - cardW / 2,
-        y: y - cardH / 2 - (sel ? 16 : 0),
-        w: cardW, h: cardH,
+        x: start + i * step - (cardW * grow) / 2,
+        y: y - lift - (cardH * grow) / 2,
+        w: cardW * grow, h: cardH * grow,
         kind: "card", card: i, label: "card" + i,
+        tipTitle: tip.title, tip: tip.body,
         fn: (function (idx) { return function () { onCard(idx); }; })(i)
       });
     }
-  }
-  function drawCard(card, x, y, w, h, rot, interactive) {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(rot || 0);
-    if (!paint("card_frame", -w / 2, -h / 2, w, h)) {
-      roundRect(-w / 2, -h / 2, w, h, 5);
-      ctx.fillStyle = COL.cream;
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = COL.ink;
-      ctx.stroke();
+    if (G.drag && G.hand[G.drag.i]) {
+      drawCard(G.hand[G.drag.i], G.drag.x, G.drag.y, cardW * 1.05, cardH * 1.05, 0);
     }
-    font(Math.max(11, Math.round(w * 0.28)), true);
+  }
+  function drawCard(card, x, y, w, h, rot) {
+    ctx.save();
+    ctx.translate(Math.round(x), Math.round(y));
+    ctx.rotate(rot || 0);
+    ctx.imageSmoothingEnabled = false;
+    if (!paint("card_frame", -w / 2, -h / 2, w, h)) {
+      roundRect(-w / 2, -h / 2, w, h, 6);
+      ctx.fillStyle = COL.cream; ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = COL.ink; ctx.stroke();
+    }
+    font(Math.max(16, Math.round(w * 0.28)), true);
     ctx.fillStyle = suitColor(card.suit);
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
-    ctx.fillText(rankStr(card.rank), -w / 2 + 4, -h / 2 + 3);
-    drawSuit(card.suit, w / 2 - 10, -h / 2 + 12, Math.max(5, w * 0.12));
-    drawCropIcon(card, 0, 4, w * 0.28);
-    font(Math.max(8, Math.round(w * 0.13)), true);
+    ctx.fillText(rankStr(card.rank), -w / 2 + w * 0.08, -h / 2 + h * 0.06);
+    var suit = "suit_" + card.suit;
+    var ss = Math.max(14, w * 0.18);
+    if (!paint(suit, w / 2 - ss - w * 0.06, -h / 2 + h * 0.06, ss, ss)) drawSuit(card.suit, w / 2 - ss, -h / 2 + h * 0.12, ss * 0.45);
+    var crop = cropImage(card);
+    var cw = w * 0.5, ch = cw * 1.15;
+    if (!paint(crop, -cw / 2, -ch * 0.35, cw, ch)) drawCropIcon(card, 0, 4, w * 0.22);
+    font(Math.max(11, Math.round(w * 0.13)), true);
     ctx.textAlign = "center";
     ctx.fillStyle = COL.ink;
-    ctx.fillText(cropName(card), 0, h / 2 - 12);
-    ctx.restore();
     ctx.textBaseline = "alphabetic";
+    ctx.fillText(cropName(card), 0, h / 2 - h * 0.08);
+    ctx.restore();
   }
   function captions() {
     if (G.screen !== "play") return { A: "", B: "", C: "", D: "" };
     if (G.phase === "plant") return { A: "Plant " + (G.plantsLeft || 0), B: "Back", C: "Compost " + (G.compostsLeft || 0), D: "Dusk" };
     return { A: "", B: "Shoo", C: "Water " + (G.watersLeft || 0), D: G.wagUsed ? "Spent" : "Wag" };
   }
+  function drawJoystick(j) {
+    var size = j.r * 2;
+    var img = IMG.ui_joystick;
+    if (img && img.complete && img.naturalWidth >= 2) {
+      var cell = img.naturalWidth / 2;
+      var ch = img.naturalHeight;
+      blit("ui_joystick", j.x - j.r, j.y - j.r, size, size, 0, 0, cell, ch);
+      var kx = j.x + joy.x * j.r * 0.46;
+      var ky = j.y + joy.y * j.r * 0.46;
+      blit("ui_joystick", kx - j.r, ky - j.r, size, size, cell, 0, cell, ch);
+      return;
+    }
+    ctx.beginPath(); ctx.arc(j.x, j.y, j.r, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(20,12,16,0.45)"; ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = "rgba(244,230,200,0.8)"; ctx.stroke();
+    ctx.beginPath(); ctx.arc(j.x + joy.x * j.r * 0.45, j.y + joy.y * j.r * 0.45, j.r * 0.38, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(244,230,200,0.9)"; ctx.fill();
+  }
+  function wordButton(x, y, w, h, label, fn, tipTitle, tip, disabled) {
+    uiButton(x, y, w, h, label, disabled ? null : fn, disabled);
+    if (!disabled) {
+      var last = hits[hits.length - 1];
+      if (last) { last.tipTitle = tipTitle; last.tip = tip; }
+    }
+  }
   function drawControls() {
     if (G.screen !== "play") return;
-    var j = frame.joy;
-    if (!paint("ui_joystick", j.x - j.r, j.y - j.r, j.r * 2, j.r * 2)) {
-      ctx.beginPath(); ctx.arc(j.x, j.y, j.r, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(20,12,16,0.45)"; ctx.fill();
-      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(244,230,200,0.8)"; ctx.stroke();
-      var kx = j.x + joy.x * j.r * 0.45, ky = j.y + joy.y * j.r * 0.45;
-      ctx.beginPath(); ctx.arc(kx, ky, j.r * 0.38, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(244,230,200,0.9)"; ctx.fill();
-    }
-    var caps = captions();
-    var cols = { A: "#3cba78", B: "#e24b4b", C: "#3aa0d8", D: "#e0b15a" };
-    var ids = ["A", "B", "C", "D"];
-    var i, b;
-    for (i = 0; i < ids.length; i++) {
-      b = frame.buttons[ids[i]];
-      var img = "ui_btn_" + ids[i].toLowerCase();
-      if (!paint(img, b.x - b.r, b.y - b.r, b.r * 2, b.r * 2)) {
-        ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-        ctx.fillStyle = cols[ids[i]]; ctx.fill();
-        ctx.lineWidth = 3; ctx.strokeStyle = COL.ink; ctx.stroke();
-        font(Math.round(b.r * 0.7), true);
-        ctx.fillStyle = COL.ink;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(ids[i], b.x, b.y + 1);
+    if (!mouseOnly) {
+      var j = frame.joy;
+      drawJoystick(j);
+      hits.push({ x: j.x, y: j.y, r: j.r * 1.15, tipTitle: "Walk", tip: "Drag to move the Keeper along the husk." });
+      var caps = captions();
+      var ids = ["A", "B", "C", "D"];
+      var tips = {
+        A: ["Plant", "Plant the selected card on the nearest empty bed."],
+        B: ["Shoo / Back", G.phase === "dusk" ? "Shoo the nearest grazer back up the rim." : "Deselect, or pause."],
+        C: ["Water / Compost", G.phase === "dusk" ? "Splash the nearest bitten bed. " + (G.watersLeft || 0) + " left." : "Compost the selected card for +1 Mult."],
+        D: ["Wag / Dusk", G.phase === "dusk" ? "Fire the front Wag once this dusk." : "Begin Dusk. Grazers walk the rim."]
+      };
+      var i, b;
+      for (i = 0; i < ids.length; i++) {
+        b = frame.buttons[ids[i]];
+        var size = b.r * 2;
+        if (!paint("ui_btn_" + ids[i].toLowerCase(), b.x - b.r, b.y - b.r, size, size)) {
+          ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+          ctx.fillStyle = { A: "#3cba78", B: "#e24b4b", C: "#3aa0d8", D: "#e454a4" }[ids[i]];
+          ctx.fill(); ctx.strokeStyle = COL.ink; ctx.lineWidth = 3; ctx.stroke();
+        }
+        font(11, true); ctx.textAlign = "center"; ctx.textBaseline = "top";
+        inkText(caps[ids[i]], b.x, b.y + b.r + 2, COL.cream);
+        ctx.textBaseline = "alphabetic";
+        hits.push({ x: b.x, y: b.y, r: b.r + 6, btn: ids[i], tipTitle: tips[ids[i]][0], tip: tips[ids[i]][1], fn: (function (id) { return function () { pressBtn(id); }; })(ids[i]) });
       }
-      font(Math.max(9, Math.round(10 * frame.u)), true);
-      ctx.fillStyle = COL.cream;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "top";
-      inkText(caps[ids[i]], b.x, b.y + b.r + 2, COL.cream);
-      ctx.textBaseline = "alphabetic";
-      hits.push({ x: b.x, y: b.y, r: b.r + 6, btn: ids[i], fn: (function (id) { return function () { pressBtn(id); }; })(ids[i]) });
-    }
-    if (finePointer) {
+    } else {
+      var bw = 150, bh = 34, gap = 8;
+      var x = frame.R - frame.wagW - bw - 16;
+      var y = frame.B - bh - 10;
+      if (G.phase === "plant") {
+        wordButton(x, y - bh - gap, bw, bh, "Compost " + (G.compostsLeft || 0), compostSelected, "Compost", "The compost heap. Discard the selected card and draw back to a full hand. +1 Mult today. Shortcut L.", false);
+        wordButton(x, y, bw, bh, "Begin Dusk", startDusk, "Begin Dusk", duskLocked() ? "The Old Keeper's note is not finished yet." : "Send the grazers onto the rim. Shortcut ;", duskLocked());
+      } else {
+        wordButton(x, y - (bh + gap) * 2, bw, bh, "Shoo  [K]", function () { tryShoo(); }, "Shoo", "Push grazers near the Keeper back up the rim and hurt them.", false);
+        wordButton(x, y - (bh + gap), bw, bh, "Water  " + (G.watersLeft || 0) + "  [L]", waterNearest, "Water", "Heal the nearest crop by 14. " + (G.watersLeft || 0) + " splashes left.", (G.watersLeft || 0) <= 0);
+        wordButton(x, y, bw, bh, G.wagUsed ? "Wag spent" : "Fire Wag  [;]", fireWag, "Fire Wag", G.wags && G.wags.length ? (WAGS[G.wags[0]].name + ". " + WAGS[G.wags[0]].blurb) : "No Wag in the row.", !!G.wagUsed);
+      }
       font(11);
-      ctx.fillStyle = "rgba(36,22,28,0.8)";
+      ctx.fillStyle = "rgba(36,22,28,0.75)";
       ctx.textAlign = "left";
-      ctx.fillText("WASD  J plant  K shoo  L water  ; wag", frame.L + 8, frame.B - 4);
+      ctx.fillText("WASD move   J plant   K shoo   L water   ; wag", frame.L + 8, frame.B - 4);
     }
-    var deckN = (G.deck ? G.deck.length : 0) + " deck  " + (G.discard ? G.discard.length : 0) + " discard" + ((G.exiled && G.exiled.length) ? "  " + G.exiled.length + " taken" : "");
-    ctx.textAlign = "right";
-    ctx.fillText(deckN, frame.play.x + frame.play.w - 4, frame.play.y + frame.play.h - 4);
+    var deckN = (G.deck ? G.deck.length : 0) + " deck   " + (G.discard ? G.discard.length : 0) + " discard" + ((G.exiled && G.exiled.length) ? "   " + G.exiled.length + " taken" : "");
+    font(11);
+    ctx.textAlign = "left";
+    ctx.fillStyle = COL.ink;
+    ctx.fillText(deckN, frame.play.x + 8, frame.play.y + 14);
   }
   function drawLogo(x, y, sc) {
     if (paint("title_logo", x, y, 280 * sc, 84 * sc)) return 84 * sc;
@@ -2455,14 +2728,15 @@
     ctx.fillText("Tithe " + s.tithe + (shown >= s.score ? (s.ok ? "  ·  paid" : "  ·  short") : ""), p.x + w / 2, p.y + 144);
     if (shown >= s.score && s.ok) {
       font(14); ctx.fillStyle = COL.cream; ctx.textAlign = "center";
-      var bits = ["Gold +" + s.goldTotal, "pay " + s.pay];
+      ctx.fillText("Clears the tithe. The extra becomes " + s.goldTotal + " gold.", p.x + w / 2, p.y + 168);
+      var bits = ["day pay " + s.pay];
       if (s.glint) bits.push("glint " + s.glint);
       if (s.rust) bits.push("rust " + s.rust);
-      ctx.fillText(bits.join("   "), p.x + w / 2, p.y + 170);
+      font(12); ctx.fillText(bits.join("   "), p.x + w / 2, p.y + 188);
     }
     if (shown >= s.score && !s.ok) {
       font(15, true); ctx.textAlign = "center"; ctx.fillStyle = COL.terra;
-      ctx.fillText("The Engine takes the husk back.", p.x + w / 2, p.y + 176);
+      ctx.fillText("Short. The Engine takes the husk back.", p.x + w / 2, p.y + 176);
     }
     var btnY = p.y + h - 42;
     if (keepOn) drawKeepRow(p.x + 16, btnY - 30, w - 32);
@@ -2598,6 +2872,59 @@
     }
     tagModal = false;
   }
+  function drawGuide() {
+    var step = guideNow();
+    if (!step || !frame) return;
+    var w = Math.min(360, frame.play.w - 16);
+    var h = 108;
+    var x = frame.play.x + 8;
+    var y = frame.play.y + 8;
+    roundRect(x, y, w, h, 10);
+    ctx.fillStyle = "rgba(36,22,28,0.9)";
+    ctx.fill();
+    ctx.strokeStyle = COL.brass; ctx.lineWidth = 2; ctx.stroke();
+    font(14, true); ctx.textAlign = "left"; ctx.fillStyle = COL.wheat;
+    ctx.fillText("Old Keeper  ·  " + ((G.guide || 0) + 1) + "/" + GUIDE.length, x + 12, y + 22);
+    font(13); ctx.fillStyle = COL.cream;
+    var lines = wrap(step.title + ". " + step.body, w - 24);
+    var i;
+    for (i = 0; i < lines.length && i < 3; i++) ctx.fillText(lines[i], x + 12, y + 44 + i * 16);
+    uiButton(x + w - 132, y + h - 32, 116, 24, "Skip the notes", skipGuide);
+  }
+  function syncTip() {
+    if (!hover.on || G.modal) { if (!G.tipHold || G.tipHold.until < (G.time || 0)) G.tip = null; return; }
+    var h = pick(hover.x, hover.y);
+    hover.card = h && h.kind === "card" ? h.card : -1;
+    hover.plot = h && h.kind === "plot" ? h.plot : -1;
+    if (mouseOnly && h && h.tip) G.tip = { title: h.tipTitle || "", body: h.tip, x: hover.x, y: hover.y };
+    else if (G.tipHold && G.tipHold.until > (G.time || 0)) G.tip = G.tipHold;
+    else G.tip = null;
+  }
+  function drawTooltip() {
+    if (!G.tip || !G.tip.body) return;
+    var maxW = 280;
+    font(12);
+    var lines = wrap(G.tip.body, maxW - 20);
+    font(13, true);
+    var titleW = G.tip.title ? ctx.measureText(G.tip.title).width : 0;
+    var w = Math.min(maxW, Math.max(titleW + 20, 160));
+    var h = 16 + (G.tip.title ? 20 : 0) + lines.length * 15;
+    var x = Math.max(8, Math.min(view.w - w - 8, G.tip.x + 14));
+    var y = Math.max(8, Math.min(view.h - h - 8, G.tip.y + 16));
+    roundRect(x, y, w, h, 8);
+    ctx.fillStyle = "rgba(36,22,28,0.94)";
+    ctx.fill();
+    ctx.strokeStyle = COL.brass; ctx.lineWidth = 2; ctx.stroke();
+    var ty = y + 16;
+    if (G.tip.title) {
+      font(13, true); ctx.textAlign = "left"; ctx.fillStyle = COL.wheat;
+      ctx.fillText(G.tip.title, x + 10, ty);
+      ty += 18;
+    }
+    font(12); ctx.fillStyle = COL.cream;
+    var i;
+    for (i = 0; i < lines.length; i++) { ctx.fillText(lines[i], x + 10, ty); ty += 15; }
+  }
   function drawToast() {
     if (!G.toast) return;
     font(14, true);
@@ -2644,7 +2971,10 @@
     }
     if (G.modal) drawModal();
     drawToast();
-    if (G.screen === "play" && G.phase === "plant" && G.ante === 1 && G.day === 1 && (G.plantedCount || 0) >= 3) {
+    drawGuide();
+    syncTip();
+    drawTooltip();
+    if (!mouseOnly && G.screen === "play" && G.phase === "plant" && G.ante === 1 && G.day === 1 && (G.plantedCount || 0) >= 3 && !duskLocked()) {
       var d = frame.buttons.D;
       ctx.globalAlpha = 0.35 + 0.25 * Math.sin(G.time * 6);
       ctx.strokeStyle = COL.wheat; ctx.lineWidth = 3;
@@ -2684,7 +3014,7 @@
     var rec = { x: p.x, y: p.y, sx: p.x, sy: p.y, joy: false, used: false };
     pointers[e.pointerId] = rec;
     if (!frame) return;
-    if (G.screen === "play" && (G.phase === "plant" || G.phase === "dusk") && !G.modal) {
+    if (!mouseOnly && G.screen === "play" && (G.phase === "plant" || G.phase === "dusk") && !G.modal) {
       var j = frame.joy;
       if (Math.hypot(p.x - j.x, p.y - j.y) <= j.r * 1.25) {
         rec.joy = true;
@@ -2695,6 +3025,12 @@
       }
     }
     var h = pick(p.x, p.y);
+    if (h && h.kind === "card" && G.phase === "plant") rec.card = h.card;
+    if (h && h.tip && !mouseOnly) {
+      rec.tipTimer = setTimeout(function () {
+        G.tipHold = { title: h.tipTitle || "", body: h.tip, x: p.x, y: p.y, until: (G.time || 0) + 2.6 };
+      }, 420);
+    }
     if (h && h.btn) {
       rec.used = true;
       rec.hold = h.btn;
@@ -2723,17 +3059,32 @@
     return null;
   }
   function onMove(e) {
+    var p = localPoint(e);
+    hover.x = p.x; hover.y = p.y; hover.on = true;
     var rec = pointers[e.pointerId];
     if (!rec) return;
-    var p = localPoint(e);
     rec.x = p.x; rec.y = p.y;
     if (rec.joy && frame) setJoy(p);
+    if (rec.card != null && Math.hypot(p.x - rec.sx, p.y - rec.sy) > 10) {
+      rec.drag = true;
+      G.drag = { i: rec.card, x: p.x, y: p.y };
+      if (rec.tipTimer) { clearTimeout(rec.tipTimer); rec.tipTimer = 0; }
+    }
   }
   function onUp(e) {
     var rec = pointers[e.pointerId];
     if (!rec) return;
+    if (rec.tipTimer) clearTimeout(rec.tipTimer);
     if (rec.joy) { joy.on = false; joy.x = 0; joy.y = 0; }
     if (rec.hold) btnHold[rec.hold] = false;
+    if (rec.drag && G.drag) {
+      G.selected = G.drag.i;
+      var drop = pick(rec.x, rec.y);
+      if (drop && drop.kind === "plot") onPlot(drop.plot);
+      else if (drop && drop.tipTitle === "Compost") compostSelected();
+      G.drag = null;
+      rec.used = true;
+    }
     if (!rec.used && !rec.joy && Math.hypot(rec.x - rec.sx, rec.y - rec.sy) < 14) {
       RefurAudio.unlock();
       var h = pick(rec.x, rec.y);
@@ -2778,12 +3129,12 @@
         var img = new Image();
         var done = false;
         function finish(ok) {
+          if (ok) IMG[name] = img;
           if (done) return;
           done = true;
-          if (ok) IMG[name] = img;
           resolve();
         }
-        img.onload = function () { finish(true); };
+        img.onload = function () { IMG[name] = img; finish(true); };
         img.onerror = function () { finish(false); };
         img.src = "assets/img/" + name + ".png";
         setTimeout(function () { finish(false); }, 2500);
@@ -2803,9 +3154,12 @@
     if (!col.grazers) col.grazers = {};
     meta = storeGet("refur-meta", null) || { sawTutorial: false, wins: 0 };
     G = freshShell();
-    finePointer = window.matchMedia && window.matchMedia("(pointer: fine)").matches;
+    var coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+    finePointer = !!(window.matchMedia && window.matchMedia("(pointer: fine)").matches);
+    mouseOnly = !(navigator.maxTouchPoints > 0) && !coarse;
     resize();
     window.addEventListener("resize", resize);
+    canvas.addEventListener("pointerleave", function () { hover.on = false; hover.card = -1; hover.plot = -1; });
     canvas.addEventListener("pointerdown", onDown, { passive: false });
     canvas.addEventListener("pointermove", onMove, { passive: false });
     canvas.addEventListener("pointerup", onUp);

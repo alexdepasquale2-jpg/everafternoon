@@ -69,13 +69,14 @@
     return true;
   }
 
-  function pack(def, scoring, tie) {
+  function pack(def, scoring, tie, cards) {
     return {
       cat: def.cat,
       name: def.name,
       baseChips: def.chips,
       baseMult: def.mult,
       scoring: scoring,
+      cards: cards,
       tie: tie
     };
   }
@@ -87,34 +88,34 @@
     var flush = isFlush(cards, wrong);
     var sh = straightHigh(cards);
     if (cards.length === 5 && g[0].n === 5) {
-      return pack(HAND.FIVE, cards.slice(), [g[0].r]);
+      return pack(HAND.FIVE, cards.slice(), [g[0].r], cards.slice());
     }
-    if (flush && sh) return pack(HAND.STRAIGHT_FLUSH, cards.slice(), [sh]);
+    if (flush && sh) return pack(HAND.STRAIGHT_FLUSH, cards.slice(), [sh], cards.slice());
     if (g[0].n === 4) {
       var quad = ofRank(cards, g[0].r);
       var kicker = desc.filter(function (c) { return c.rank !== g[0].r; })[0];
-      return pack(HAND.QUADS, quad, [g[0].r, kicker ? kicker.rank : 0]);
+      return pack(HAND.QUADS, quad, [g[0].r, kicker ? kicker.rank : 0], cards.slice());
     }
     if (g[0].n === 3 && g[1] && g[1].n >= 2) {
-      return pack(HAND.HOUSE, cards.slice(), [g[0].r, g[1].r]);
+      return pack(HAND.HOUSE, cards.slice(), [g[0].r, g[1].r], cards.slice());
     }
-    if (flush) return pack(HAND.FLUSH, cards.slice(), desc.map(function (c) { return c.rank; }));
-    if (sh) return pack(HAND.STRAIGHT, cards.slice(), [sh]);
+    if (flush) return pack(HAND.FLUSH, cards.slice(), desc.map(function (c) { return c.rank; }), cards.slice());
+    if (sh) return pack(HAND.STRAIGHT, cards.slice(), [sh], cards.slice());
     if (g[0].n === 3) {
       var kick = desc.filter(function (c) { return c.rank !== g[0].r; }).map(function (c) { return c.rank; });
-      return pack(HAND.TRIPS, ofRank(cards, g[0].r), [g[0].r].concat(kick));
+      return pack(HAND.TRIPS, ofRank(cards, g[0].r), [g[0].r].concat(kick), cards.slice());
     }
     if (g[0].n === 2 && g[1] && g[1].n === 2) {
       var hi = Math.max(g[0].r, g[1].r);
       var lo = Math.min(g[0].r, g[1].r);
       var kick2 = desc.filter(function (c) { return c.rank !== hi && c.rank !== lo; })[0];
-      return pack(HAND.TWO, ofRank(cards, hi).concat(ofRank(cards, lo)), [hi, lo, kick2 ? kick2.rank : 0]);
+      return pack(HAND.TWO, ofRank(cards, hi).concat(ofRank(cards, lo)), [hi, lo, kick2 ? kick2.rank : 0], cards.slice());
     }
     if (g[0].n === 2) {
       var kick3 = desc.filter(function (c) { return c.rank !== g[0].r; }).map(function (c) { return c.rank; });
-      return pack(HAND.PAIR, ofRank(cards, g[0].r), [g[0].r].concat(kick3));
+      return pack(HAND.PAIR, ofRank(cards, g[0].r), [g[0].r].concat(kick3), cards.slice());
     }
-    return pack(HAND.HIGH, [desc[0]], desc.map(function (c) { return c.rank; }));
+    return pack(HAND.HIGH, [desc[0]], desc.map(function (c) { return c.rank; }), cards.slice());
   }
 
   function better(a, b) {
@@ -163,7 +164,7 @@
         name: "EMPTY FURROW",
         chips: 0, mult: 0, score: 0,
         baseChips: 0, baseMult: 0, rankSum: 0,
-        bonusChips: 0, bonusMult: 0, lean: false, scoring: []
+        bonusChips: 0, bonusMult: 0, lean: false, scoring: [], cards: []
       };
     }
     var rankSum = 0;
@@ -190,7 +191,8 @@
       bonusChips: bonusChips,
       bonusMult: bonusMult,
       lean: lean,
-      scoring: hand.scoring
+      scoring: hand.scoring,
+      cards: hand.cards || hand.scoring
     };
   }
 
